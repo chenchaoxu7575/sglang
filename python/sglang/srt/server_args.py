@@ -7717,24 +7717,49 @@ class ServerArgs:
         # TRTLLMMLABackend and inherit its dense read/write path.
         # flashmla / cutlass_mla share the create_flashmla block-table path and
         # can be added the same way once exercised.
+        # The allowlist is per ROLE: flashinfer is admitted for prefill but NOT for
+        # decode (see below), so the two cannot share one set.
         if self.enable_unified_memory and self.use_mla_backend():
-            allowed_full = {
+            allowed_prefill = {
                 "triton",
                 "trtllm_mla",
                 "flashinfer",
                 "cutedsl_mla",
                 "tokenspeed_mla",
             }
+            # flashinfer MLA *decode* is excluded under unified memory. Its
+            # virtual->dense kv_indices remap is a per-forward gather that returns a
+            # FRESH tensor (FlashInferMLAIndicesUpdaterDecode.call_begin_forward), so
+            # under cuda-graph replay the capture-stable buffer the captured kernel
+            # reads keeps the raw VIRTUAL ids and the output is silently wrong —
+            # measured on Kimi-Linear/B300: GSM8K 0.000 with Invalid 1.000 (twice, no
+            # crash and no warning), against 0.925 for the same cell eager and 0.910
+            # on the static pool. Admitting it therefore trades a startup error for a
+            # wrong answer, which is the worse failure.
+            # Re-admit once the remap is fused into
+            # create_flashinfer_kv_indices_triton (v2p_ptr + PAGED_SIZE + PAGE_MULT),
+            # the way create_flashmla_kv_indices_triton already does it for the
+            # trtllm/flashmla block-table path — that writes dense ids directly into
+            # the capture-stable buffer and needs no scratch.
+            allowed_decode = allowed_prefill - {"flashinfer"}
         else:
-            allowed_full = {"triton"}
-        backends = set(self._resolved_attention_backends())
-        backends.discard(None)
-        assert backends <= allowed_full, (
-            "--enable-page-major-kv-layout requires the Triton attention backend "
-            "for the full-attention layers (unified-memory MLA also allows the "
-            f"paged MLA backends); got {sorted(backends)}, allowed "
-            f"{sorted(allowed_full)}. Pass a compatible --attention-backend."
-        )
+            allowed_prefill = allowed_decode = {"triton"}
+        prefill_backend, decode_backend = self._resolved_attention_backends()
+        for role, backend, allowed in (
+            ("prefill", prefill_backend, allowed_prefill),
+            ("decode", decode_backend, allowed_decode),
+        ):
+            assert backend is None or backend in allowed, (
+                "--enable-page-major-kv-layout requires the Triton attention backend "
+                "for the full-attention layers (unified-memory MLA also allows the "
+                f"paged MLA backends); got {role} backend {backend!r}, allowed "
+                f"{sorted(allowed)}. Pass a compatible --attention-backend"
+                + (
+                    " (for unified-memory MLA decode use trtllm_mla or cutedsl_mla)."
+                    if role == "decode"
+                    else "."
+                )
+            )
         # The Mamba state is stored in envelope-strided views; only the
         # stride-aware Triton causal-conv / SSM kernels read them correctly.
         linear_backends = {

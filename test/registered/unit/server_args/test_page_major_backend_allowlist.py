@@ -20,8 +20,14 @@ backends (`trtllm_mla` and its `cutedsl_mla` / `tokenspeed_mla` subclasses, plus
 `flashinfer`'s MLA backend) can read it directly once their kv_indices / block
 tables are remapped to dense ids.
 
+The allowlist is per ROLE: `flashinfer` is admitted for prefill but rejected for
+decode, because its virtual->dense kv_indices remap returns a fresh tensor per
+forward and a captured decode graph therefore reads stale virtual ids and is
+silently wrong (measured Kimi-Linear/B300 GSM8K 0.000 vs 0.925 eager).
+
 Pinned here so the exception cannot silently widen to a backend that has no
-dense-id remapping (`fa3`, `flashmla`, ...) or leak into the MHA path.
+dense-id remapping (`fa3`, `flashmla`, ...), leak into the MHA path, or re-admit
+flashinfer decode before the remap is fused into the index kernel.
 
     python -m pytest test/registered/unit/server_args/test_page_major_backend_allowlist.py -v
 """
@@ -34,12 +40,23 @@ from sglang.test.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=5, suite="base-a-test-cpu")
 
 
-def _accepts(backend: str, *, use_mla: bool, unified: bool = True) -> bool:
+def _accepts(
+    backend: str = None,
+    *,
+    use_mla: bool,
+    unified: bool = True,
+    prefill: str = None,
+    decode: str = None,
+) -> bool:
     """Run just `_handle_page_major_kv_layout` against a minimal stand-in.
 
     ServerArgs' real constructor pulls in a model config; this exercises the
-    single handler under test with the fields it reads.
+    single handler under test with the fields it reads. Pass `backend` to put the
+    same backend in both roles, or `prefill`/`decode` to set them independently
+    (the handler checks each role against its own allowlist).
     """
+    prefill = prefill or backend
+    decode = decode or backend
     sa = ServerArgs.__new__(ServerArgs)
     for name, value in {
         "enable_unified_memory": unified,
@@ -47,8 +64,8 @@ def _accepts(backend: str, *, use_mla: bool, unified: bool = True) -> bool:
         # or the handler returns before reaching the allowlist.
         "enable_page_major_kv_layout": not unified,
         "attention_backend": backend,
-        "prefill_attention_backend": None,
-        "decode_attention_backend": None,
+        "prefill_attention_backend": prefill,
+        "decode_attention_backend": decode,
         "linear_attn_backend": "triton",
         "linear_attn_decode_backend": None,
         "linear_attn_prefill_backend": None,
@@ -56,7 +73,7 @@ def _accepts(backend: str, *, use_mla: bool, unified: bool = True) -> bool:
     }.items():
         object.__setattr__(sa, name, value)
     sa.use_mla_backend = lambda: use_mla
-    sa._resolved_attention_backends = lambda: [backend]
+    sa._resolved_attention_backends = lambda: (prefill, decode)
     try:
         ServerArgs._handle_page_major_kv_layout(sa)
         return True
@@ -65,10 +82,16 @@ def _accepts(backend: str, *, use_mla: bool, unified: bool = True) -> bool:
 
 
 class TestPageMajorBackendAllowlist(unittest.TestCase):
-    # Wired for the dense per-layer MLA views (see the module docstring).
-    DENSE_MLA_BACKENDS = ("trtllm_mla", "flashinfer", "cutedsl_mla", "tokenspeed_mla")
+    # Wired for the dense per-layer MLA views in BOTH roles (see the module docstring).
+    DENSE_MLA_BACKENDS = ("trtllm_mla", "cutedsl_mla", "tokenspeed_mla")
+    # Dense-wired for prefill only: flashinfer's decode remap is not capture-safe.
+    PREFILL_ONLY_BACKENDS = ("flashinfer",)
     # No dense-id remapping: must stay rejected until they get one.
     UNWIRED_BACKENDS = ("fa3", "flashmla", "cutlass_mla", "trtllm_mha", "aiter")
+
+    @property
+    def all_dense_backends(self):
+        return self.DENSE_MLA_BACKENDS + self.PREFILL_ONLY_BACKENDS
 
     def test_triton_always_allowed(self):
         for use_mla in (True, False):
@@ -81,9 +104,27 @@ class TestPageMajorBackendAllowlist(unittest.TestCase):
                 f"{backend} should be allowed with the unified-memory MLA pool",
             )
 
+    def test_flashinfer_allowed_for_prefill_only(self):
+        """flashinfer reads the dense views correctly, but its decode kv_indices
+        remap allocates per forward, so a captured decode graph is silently wrong.
+        Prefill is not captured under unified, so it stays admitted."""
+        for backend in self.PREFILL_ONLY_BACKENDS:
+            self.assertTrue(
+                _accepts(prefill=backend, decode="trtllm_mla", use_mla=True),
+                f"{backend} should be allowed as the prefill backend",
+            )
+            self.assertFalse(
+                _accepts(prefill="triton", decode=backend, use_mla=True),
+                f"{backend} must be rejected as the decode backend under unified",
+            )
+            self.assertFalse(
+                _accepts(backend, use_mla=True),
+                f"{backend} in both roles must be rejected (decode role)",
+            )
+
     def test_dense_mla_backends_rejected_for_mha(self):
         """The dense-view exception is MLA-only -- MHA sub-pools stay strided."""
-        for backend in self.DENSE_MLA_BACKENDS:
+        for backend in self.all_dense_backends:
             self.assertFalse(
                 _accepts(backend, use_mla=False),
                 f"{backend} must stay rejected for a non-MLA model",
@@ -92,7 +133,7 @@ class TestPageMajorBackendAllowlist(unittest.TestCase):
     def test_dense_mla_backends_rejected_without_unified_memory(self):
         """Plain --enable-page-major-kv-layout (no unified pool) keeps the
         strided views, so only Triton can read them."""
-        for backend in self.DENSE_MLA_BACKENDS:
+        for backend in self.all_dense_backends:
             self.assertFalse(
                 _accepts(backend, use_mla=True, unified=False),
                 f"{backend} must stay rejected without --enable-unified-memory",
