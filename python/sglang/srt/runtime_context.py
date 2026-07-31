@@ -858,6 +858,32 @@ class RuntimeContext:
         """
         return _ServerArgsOverride(self, fields)
 
+    @contextmanager
+    def preserve_config(self):
+        """Snapshot the full config lifecycle and reinstate it verbatim on exit.
+
+        Used when a nested construction step must leave the process-wide config
+        exactly as it found it — e.g. building a draft worker off a private
+        ``ServerArgs`` copy without disturbing the target's published config.
+        Unlike restoring via ``set_server_args`` (which re-projects the bags
+        from the pristine record and so *discards* every post-publish
+        ``override`` made during target loading), this reinstates the resolved
+        bags as-is, so namespace readers keep the overridden values afterward.
+        """
+        prev_server_args = self._server_args
+        prev_bags = self._config_bags
+        prev_overrides_log = self._overrides_log
+        prev_parallel_config = self.parallel._config
+        prev_capture = self.flags.capture.enable_torch_compile
+        try:
+            yield
+        finally:
+            self._server_args = prev_server_args
+            self._config_bags = prev_bags
+            self._overrides_log = prev_overrides_log
+            self.parallel._config = prev_parallel_config
+            self.flags.capture.enable_torch_compile = prev_capture
+
 
 class _ServerArgsOverride:
     """Scoped config override (see ``RuntimeContext.override_server_args``).
