@@ -46,7 +46,7 @@ from sglang.srt.mem_cache.allocation import (
 from sglang.srt.mem_cache.allocation import (
     assign_req_to_token_pool_func as assign_req_to_token_pool_func,
 )
-from sglang.srt.runtime_context import get_server_args
+from sglang.srt.runtime_context import get_exec, get_server_args, get_spec
 from sglang.srt.utils import (
     is_cpu,
     is_cuda,
@@ -257,9 +257,9 @@ def spec_need_hidden_states(server_args: Optional[ServerArgs] = None) -> bool:
     # STANDALONE drafts don't consume `spec_info.hidden_states` (vanilla LLM).
     # multi_layer_eagle, DFLASH, and DSPARK don't relay hidden_states through FutureMap.
     # TODO(lsyin): also skip when step == 1.
-    if server_args.speculative_algorithm in ("STANDALONE", "DFLASH", "DSPARK"):
+    if get_spec().speculative_algorithm in ("STANDALONE", "DFLASH", "DSPARK"):
         return False
-    return not server_args.enable_multi_layer_eagle
+    return not get_spec().enable_multi_layer_eagle
 
 
 @torch.compile(dynamic=True, disable=_is_npu or _is_xpu)
@@ -891,7 +891,7 @@ def commit_mamba_states_after_verify(
             # we need to update the mamba state for the request at the crossing point.
             seq_lens_pre_verify = batch.seq_lens
             seq_lens_post_verify = batch.seq_lens + accept_lens
-            mamba_track_interval = get_server_args().mamba_track_interval
+            mamba_track_interval = get_exec().mamba.mamba_track_interval
             to_track_mask = (
                 seq_lens_pre_verify // mamba_track_interval
                 != seq_lens_post_verify // mamba_track_interval
@@ -940,7 +940,7 @@ def spec_prepare_for_decode(batch: ScheduleBatch) -> None:
     if server_args.enable_mamba_extra_buffer_lazy():
         # Scheduler phase (outside forward isolation).
         batch.mamba_lazy_spec_prepare(
-            server_args.mamba_track_interval,
+            get_exec().mamba.mamba_track_interval,
             server_args.max_speculative_num_draft_tokens,
         )
     if batch.spec_algorithm.is_dflash_family():

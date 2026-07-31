@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sglang.srt.runtime_context import get_server_args
+from sglang.srt.runtime_context import get_schedule, get_server_args, get_spec
 from sglang.srt.server_args import ServerArgs
 
 
@@ -10,18 +10,18 @@ def get_alloc_len_per_decode(server_args: Optional[ServerArgs] = None) -> int:
     if server_args is None:
         server_args = get_server_args()
 
-    if server_args.speculative_algorithm is None:
+    if get_spec().speculative_algorithm is None:
         return 1
 
     # Spec decoding allocates max(topk * num_steps, num_draft_tokens) per decode step.
-    spec_steps = server_args.speculative_num_steps or 1
-    spec_topk = server_args.speculative_eagle_topk or 1
+    spec_steps = get_spec().speculative_num_steps or 1
+    spec_topk = get_spec().speculative_eagle_topk or 1
     spec_tokens = server_args.max_speculative_num_draft_tokens
-    page_size = server_args.page_size
+    page_size = get_schedule().page_size
 
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-    spec_algo = SpeculativeAlgorithm.from_string(server_args.speculative_algorithm)
+    spec_algo = SpeculativeAlgorithm.from_string(get_spec().speculative_algorithm)
     if page_size == 1 or spec_topk == 1 or not spec_algo.has_draft_kv():
         return max(spec_steps * spec_topk, spec_tokens)
     else:

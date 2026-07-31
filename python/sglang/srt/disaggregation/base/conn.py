@@ -41,6 +41,8 @@ class KVArgs:
     kv_data_lens: List[int]
     kv_item_lens: List[int]
     kv_layer_ids: List[int]
+    # resolved kv-cache dtype string of the owning runner (handshake identity)
+    kv_cache_dtype_str: str
     aux_data_ptrs: List[int]
     aux_data_lens: List[int]
     aux_item_lens: List[int]
