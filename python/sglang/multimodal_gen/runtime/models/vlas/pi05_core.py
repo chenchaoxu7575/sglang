@@ -1510,7 +1510,13 @@ class Pi05CoreModel(nn.Module):
                 [prefix_pad_2d_masks, suffix_att_2d_masks],
                 dim=2,
             )
-            attention_mask = self.prepare_attention_masks_4d(full_att_2d_masks)
+            # The suffix block is fully attended, so the combined mask is full
+            # exactly when the prefix is. Reuse the host-side flag to avoid a
+            # device-to-host sync during CUDA graph capture.
+            attention_mask = self.prepare_attention_masks_4d(
+                full_att_2d_masks,
+                full_attention=prefix_full_attention,
+            )
         prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
         position_ids = (
             prefix_offsets

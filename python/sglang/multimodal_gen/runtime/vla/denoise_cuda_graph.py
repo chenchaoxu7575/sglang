@@ -30,6 +30,10 @@ class VLADenoiseGraphSignature:
     action_dim: int
     dtype: str
     parallel_layout: str
+    # Whether the prefix is fully attended. The two regimes capture different
+    # kernels (no attention mask vs a materialized 4D additive mask), so they
+    # must not share a graph.
+    full_attention: bool = True
 
 
 @dataclass
@@ -166,12 +170,13 @@ class VLADenoiseGraphRunner:
         self._captured[signature] = captured
         logger.info(
             "Captured VLA denoise CUDA graph: batch=%d prefix=%d action=%dx%d "
-            "dtype=%s",
+            "dtype=%s full_attention=%s",
             signature.batch_size,
             signature.prefix_len,
             signature.action_horizon,
             signature.action_dim,
             signature.dtype,
+            signature.full_attention,
         )
         return captured
 

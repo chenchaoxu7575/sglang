@@ -11,6 +11,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.pi05 import Pi05PipelineConf
 from sglang.multimodal_gen.runtime.models.vlas.pi05_core import (
     Pi05CoreModel,
     Pi05SiglipAttention,
+    make_att_2d_masks,
     patch_siglip_vision_attention_to_native,
 )
 from sglang.multimodal_gen.runtime.models.vlas.pi05_policy import (
@@ -23,6 +24,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.p
 )
 from sglang.multimodal_gen.runtime.vla.denoise_cuda_graph import (
     VLADenoiseGraphRunner,
+    VLADenoiseGraphSignature,
     _CapturedDenoiseGraph,
 )
 from sglang.multimodal_gen.runtime.vla.parallel import VLASplitGroup
@@ -81,6 +83,50 @@ def test_denoise_graph_skips_prefix_copy_for_same_digest(monkeypatch):
     runner._sync_context_if_needed(captured, _prefix_context(2.0, "same"))
 
     assert captured.static_prefix_context.past_key_values[0][0].eq(1.0).all()
+
+
+def test_suffix_attention_block_is_always_fully_attended():
+    # Mirrors Pi05CoreModel.embed_suffix: the suffix pad mask is all ones and the
+    # suffix attention mask is zero except at index 0. The 2D suffix block is then
+    # all-True, which is why `full_att_2d_masks.all()` is decided by the prefix
+    # pad mask alone.
+    action_len = 8
+    suffix_pad_masks = torch.ones(1, action_len, dtype=torch.bool)
+    suffix_att_masks = torch.zeros(1, action_len)
+    suffix_att_masks[:, 0] = 1
+
+    assert make_att_2d_masks(suffix_pad_masks, suffix_att_masks).all()
+
+
+def _recording_policy_model() -> tuple[Pi05PolicyModel, list]:
+    model = Pi05PolicyModel.__new__(Pi05PolicyModel)
+    model.config = SimpleNamespace(parallel_layout_version="pi05-layout-v1")
+    seen: list[VLADenoiseGraphSignature] = []
+
+    class _RecordingRunner:
+        def capture_or_run(self, signature, step_fn, *args):
+            seen.append(signature)
+            return torch.zeros(1, 2, 4)
+
+    model.graph_runner = _RecordingRunner()
+    return model, seen
+
+
+def test_denoise_step_keeps_cuda_graph_without_full_attention():
+    model, seen = _recording_policy_model()
+
+    for full_attention in (True, False):
+        context = _prefix_context(1.0, None)
+        context.layout = {"full_attention": full_attention}
+        Pi05PolicyModel.denoise_step(
+            model,
+            context,
+            torch.zeros(1, 2, 4),
+            torch.zeros(1),
+        )
+
+    assert [signature.full_attention for signature in seen] == [True, False]
+    assert seen[0] != seen[1]
 
 
 def test_runai_direct_gpu_loader_does_not_reject_split_roles(monkeypatch):

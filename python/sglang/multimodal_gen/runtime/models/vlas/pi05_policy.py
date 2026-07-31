@@ -887,8 +887,7 @@ class Pi05PolicyModel(nn.Module):
         action_position_offset: int = 0,
         action_sp_enabled: bool = False,
     ) -> torch.Tensor:
-        if not bool(prefix_context.layout.get("full_attention", False)):
-            use_cuda_graph = False
+        full_attention = bool(prefix_context.layout.get("full_attention", False))
         if not use_cuda_graph:
             return self.action_expert(
                 prefix_context,
@@ -909,6 +908,7 @@ class Pi05PolicyModel(nn.Module):
             action_dim=x_t.shape[2],
             dtype=str(x_t.dtype).replace("torch.", ""),
             parallel_layout=parallel_layout,
+            full_attention=full_attention,
         )
 
         def step_fn(
