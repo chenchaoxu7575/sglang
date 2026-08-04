@@ -24,12 +24,15 @@ logger = init_logger(__name__)
 
 @dataclass(frozen=True)
 class VLADenoiseGraphSignature:
+    """Values that uniquely identify a captured VLA denoise graph."""
+
     batch_size: int
     prefix_len: int
     action_horizon: int
     action_dim: int
     dtype: str
     parallel_layout: str
+    num_steps: int
 
 
 @dataclass
@@ -166,12 +169,13 @@ class VLADenoiseGraphRunner:
         self._captured[signature] = captured
         logger.info(
             "Captured VLA denoise CUDA graph: batch=%d prefix=%d action=%dx%d "
-            "dtype=%s",
+            "dtype=%s num_steps=%d",
             signature.batch_size,
             signature.prefix_len,
             signature.action_horizon,
             signature.action_dim,
             signature.dtype,
+            signature.num_steps,
         )
         return captured
 

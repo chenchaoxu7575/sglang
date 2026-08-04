@@ -883,6 +883,7 @@ class Pi05PolicyModel(nn.Module):
         x_t: torch.Tensor,
         timestep: torch.Tensor,
         *,
+        num_steps: int,
         use_cuda_graph: bool = True,
         action_position_offset: int = 0,
         action_sp_enabled: bool = False,
@@ -909,6 +910,7 @@ class Pi05PolicyModel(nn.Module):
             action_dim=x_t.shape[2],
             dtype=str(x_t.dtype).replace("torch.", ""),
             parallel_layout=parallel_layout,
+            num_steps=num_steps,
         )
 
         def step_fn(
@@ -1078,6 +1080,7 @@ class Pi05PolicyModel(nn.Module):
                 prefix_context,
                 x_t,
                 timestep,
+                num_steps=num_steps,
                 use_cuda_graph=use_cuda_graph,
                 action_position_offset=action_position_offset,
                 action_sp_enabled=action_sp_enabled,

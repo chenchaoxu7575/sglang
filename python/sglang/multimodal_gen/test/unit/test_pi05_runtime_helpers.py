@@ -23,6 +23,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.p
 )
 from sglang.multimodal_gen.runtime.vla.denoise_cuda_graph import (
     VLADenoiseGraphRunner,
+    VLADenoiseGraphSignature,
     _CapturedDenoiseGraph,
 )
 from sglang.multimodal_gen.runtime.vla.parallel import VLASplitGroup
@@ -81,6 +82,34 @@ def test_denoise_graph_skips_prefix_copy_for_same_digest(monkeypatch):
     runner._sync_context_if_needed(captured, _prefix_context(2.0, "same"))
 
     assert captured.static_prefix_context.past_key_values[0][0].eq(1.0).all()
+
+
+def test_denoise_step_includes_num_steps_in_graph_signature():
+    """Different denoise schedules must not silently share a captured graph."""
+    model = Pi05PolicyModel.__new__(Pi05PolicyModel)
+    model.config = SimpleNamespace(parallel_layout_version="pi05-layout-v1")
+    seen: list[VLADenoiseGraphSignature] = []
+
+    class _RecordingRunner:
+        def capture_or_run(self, signature, step_fn, *args):
+            seen.append(signature)
+            return torch.zeros(1, 2, 4)
+
+    model.graph_runner = _RecordingRunner()
+    context = _prefix_context(1.0, None)
+    context.layout = {"full_attention": True}
+
+    for num_steps in (10, 5):
+        Pi05PolicyModel.denoise_step(
+            model,
+            context,
+            torch.zeros(1, 2, 4),
+            torch.zeros(1),
+            num_steps=num_steps,
+        )
+
+    assert [signature.num_steps for signature in seen] == [10, 5]
+    assert seen[0] != seen[1]
 
 
 def test_runai_direct_gpu_loader_does_not_reject_split_roles(monkeypatch):
